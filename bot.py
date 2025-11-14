@@ -1,5 +1,5 @@
 import os
-(import sqlite3
+import sqlite3
 import io
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# === SÉCURITÉ : CHANGE CET ID ===
-ALLOWED_USER_ID = 123456789  # Remplace par TON ID Telegram (voir plus bas)
+# === SÉCURITÉ : TON ID TELEGRAM ===
+ALLOWED_USER_ID = 123456789  # REMPLACE PAR TON ID (via @userinfobot)
 
-# DB
+# Base de données
 conn = sqlite3.connect('fichiers.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -28,7 +28,8 @@ def parse_fiches(content):
     fiches = content.split('----------------------------------------')
     parsed = []
     for fiche in fiches:
-        if not fiche.strip(): continue
+        if not fiche.strip(): 
+            continue
         lines = fiche.strip().split('\n')
         mobile = None
         for line in lines:
@@ -40,7 +41,7 @@ def parse_fiches(content):
             parsed.append((mobile, '\n'.join(lines)))
     return parsed
 
-# Ajouter
+# Ajouter fiche
 async def ajouter_fiche(update: Update, context: CallbackContext):
     if update.effective_user.id != ALLOWED_USER_ID:
         await update.message.reply_text("Accès refusé.")
@@ -77,9 +78,9 @@ async def ajouter_fiche(update: Update, context: CallbackContext):
         conn.commit()
         await message.reply_text(f"Fiche ajoutée pour {numero}.")
     else:
-        await message.reply_text("Envoie un .txt ou du texte avec 'Ajoute à 06...'")
+        await message.reply_text("Envoie un .txt ou texte avec 'Ajoute à 06...'")
 
-# /num
+# Commande /num
 async def num_command(update: Update, context: CallbackContext):
     if update.effective_user.id != ALLOWED_USER_ID:
         await update.message.reply_text("Accès refusé.")
@@ -89,7 +90,13 @@ async def num_command(update: Update, context: CallbackContext):
     if len(args) != 2:
         await update.message.reply_text("Utilisation : /num 0612345678 4")
         return
-    numero, qty = args[0], int(args[1])
+    numero = args[0]
+    try:
+        qty = int(args[1])
+    except:
+        await update.message.reply_text("Quantité invalide.")
+        return
+
     cursor.execute("SELECT content FROM fiches WHERE numero = ? ORDER BY id DESC LIMIT ?", (numero, qty))
     fiches = cursor.fetchall()
     if not fiches:
@@ -98,7 +105,7 @@ async def num_command(update: Update, context: CallbackContext):
     for f in fiches:
         await update.message.reply_text(f[0])
 
-# Start
+# /start
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "Bot Fiches Banque Populaire\n\n"
@@ -107,6 +114,7 @@ async def start(update: Update, context: CallbackContext):
         "• /num 0612345678 4 → récupère 4 fiches"
     )
 
+# Lancer le bot
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
