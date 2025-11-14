@@ -120,8 +120,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("num", num_command))
     app.add_handler(MessageHandler(filters.DOCUMENT | filters.TEXT, ajouter_fiche))
-    app.run_polling()
+    
+    # CORRECTION POUR RENDER
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()
+
 
