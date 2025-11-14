@@ -5,14 +5,10 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from dotenv import load_dotenv
 
-# Charger .env (inutile sur Render, mais sans erreur)
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
+ALLOWED_USER_ID = 6078258363
 
-# === TON ID TELEGRAM (via @userinfobot) ===
-ALLOWED_USER_ID = 6078258363  # REMPLACE SI TU CHANGES
-
-# Base de données
 conn = sqlite3.connect('fichiers.db', check_same_thread=False)
 cursor = conn.cursor()
 cursor.execute('''
@@ -24,7 +20,6 @@ cursor.execute('''
 ''')
 conn.commit()
 
-# Parser les fiches
 def parse_fiches(content):
     fiches = content.split('----------------------------------------')
     parsed = []
@@ -42,7 +37,6 @@ def parse_fiches(content):
             parsed.append((mobile, '\n'.join(lines)))
     return parsed
 
-# Ajouter fiche
 async def ajouter_fiche(update: Update, context: CallbackContext):
     if update.effective_user.id != ALLOWED_USER_ID:
         await update.message.reply_text("Accès refusé.")
@@ -81,7 +75,6 @@ async def ajouter_fiche(update: Update, context: CallbackContext):
     else:
         await update.message.reply_text("Envoie un .txt ou texte avec 'Ajoute à 06...'")
 
-# Commande /num
 async def num_command(update: Update, context: CallbackContext):
     if update.effective_user.id != ALLOWED_USER_ID:
         await update.message.reply_text("Accès refusé.")
@@ -106,18 +99,16 @@ async def num_command(update: Update, context: CallbackContext):
     for f in fiches:
         await update.message.reply_text(f[0])
 
-# /start → "Bonjour le Z"
 async def start(update: Update, context: CallbackContext):
     await update.message.reply_text("Bonjour le Z")
 
-# Lancer le bot
 def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("num", num_command))
     app.add_handler(MessageHandler(filters.DOCUMENT | filters.TEXT, ajouter_fiche))
     
-    # FONCTIONNE SUR RENDER
+    # SANS drop_pending_updates → FONCTIONNE SUR RENDER
     app.run_polling()
 
 if __name__ == '__main__':
