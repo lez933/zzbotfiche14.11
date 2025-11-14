@@ -5,11 +5,12 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
 from dotenv import load_dotenv
 
+# Charger .env (inutile sur Render, mais sans erreur)
 load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-# === SÉCURITÉ : TON ID TELEGRAM ===
-ALLOWED_USER_ID = 6070250363  # REMPLACE PAR TON ID (via @userinfobot)
+# === TON ID TELEGRAM (via @userinfobot) ===
+ALLOWED_USER_ID = 6078258363  # REMPLACE SI TU CHANGES
 
 # Base de données
 conn = sqlite3.connect('fichiers.db', check_same_thread=False)
@@ -28,7 +29,7 @@ def parse_fiches(content):
     fiches = content.split('----------------------------------------')
     parsed = []
     for fiche in fiches:
-        if not fiche.strip(): 
+        if not fiche.strip():
             continue
         lines = fiche.strip().split('\n')
         mobile = None
@@ -72,13 +73,13 @@ async def ajouter_fiche(update: Update, context: CallbackContext):
 
     if content and numero:
         if not (numero.startswith('06') or numero.startswith('07')):
-            await message.reply_text("Numéro invalide.")
+            await update.message.reply_text("Numéro invalide.")
             return
         cursor.execute("INSERT INTO fiches (numero, content) VALUES (?, ?)", (numero, content))
         conn.commit()
         await message.reply_text(f"Fiche ajoutée pour {numero}.")
     else:
-        await message.reply_text("Envoie un .txt ou texte avec 'Ajoute à 06...'")
+        await update.message.reply_text("Envoie un .txt ou texte avec 'Ajoute à 06...'")
 
 # Commande /num
 async def num_command(update: Update, context: CallbackContext):
@@ -105,14 +106,9 @@ async def num_command(update: Update, context: CallbackContext):
     for f in fiches:
         await update.message.reply_text(f[0])
 
-# /start
+# /start → "Bonjour le Z"
 async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text(
-        "Bot Fiches Banque Populaire\n\n"
-        "• Envoie un .txt → ajout auto\n"
-        "• Texte + caption 'Ajoute à 06...' → ajout manuel\n"
-        "• /num 0612345678 4 → récupère 4 fiches"
-    )
+    await update.message.reply_text("Bonjour le Z")
 
 # Lancer le bot
 def main():
@@ -121,10 +117,8 @@ def main():
     app.add_handler(CommandHandler("num", num_command))
     app.add_handler(MessageHandler(filters.DOCUMENT | filters.TEXT, ajouter_fiche))
     
-    # CORRECTION POUR RENDER
-    app.run_polling(drop_pending_updates=True)
+    # FONCTIONNE SUR RENDER
+    app.run_polling()
 
 if __name__ == '__main__':
     main()
-
-
