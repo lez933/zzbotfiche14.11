@@ -41,14 +41,11 @@ async def ajouter_fiche(update: Update, context: CallbackContext):
     if update.effective_user.id != ALLOWED_USER_ID:
         await update.message.reply_text("Accès refusé.")
         return
-
     message = update.message
     numero = None
     content = None
-
     if message.caption and 'Ajoute à' in message.caption:
         numero = message.caption.split('Ajoute à')[-1].strip()
-
     if message.document:
         file = await message.document.get_file()
         byte_array = await file.download_as_bytearray()
@@ -64,7 +61,6 @@ async def ajouter_fiche(update: Update, context: CallbackContext):
             content = file_content
     elif message.text:
         content = message.text
-
     if content and numero:
         if not (numero.startswith('06') or numero.startswith('07')):
             await update.message.reply_text("Numéro invalide.")
@@ -79,7 +75,6 @@ async def num_command(update: Update, context: CallbackContext):
     if update.effective_user.id != ALLOWED_USER_ID:
         await update.message.reply_text("Accès refusé.")
         return
-
     args = context.args
     if len(args) != 2:
         await update.message.reply_text("Utilisation : /num 0612345678 4")
@@ -90,7 +85,6 @@ async def num_command(update: Update, context: CallbackContext):
     except:
         await update.message.reply_text("Quantité invalide.")
         return
-
     cursor.execute("SELECT content FROM fiches WHERE numero = ? ORDER BY id DESC LIMIT ?", (numero, qty))
     fiches = cursor.fetchall()
     if not fiches:
@@ -107,9 +101,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("num", num_command))
     app.add_handler(MessageHandler(filters.DOCUMENT | filters.TEXT, ajouter_fiche))
-    
-    # SANS drop_pending_updates → FONCTIONNE SUR RENDER
-    app.run_polling()
+    app.run_polling()  # SANS drop_pending_updates
 
 if __name__ == '__main__':
     main()
