@@ -9,7 +9,7 @@ load_dotenv()
 TOKEN = os.getenv('TELEGRAM_TOKEN')
 
 # === SÉCURITÉ : TON ID TELEGRAM ===
-ALLOWED_USER_ID = 123456789  # REMPLACE PAR TON ID (via @userinfobot)
+ALLOWED_USER_ID = 6070250363  # REMPLACE PAR TON ID (via @userinfobot)
 
 # Base de données
 conn = sqlite3.connect('fichiers.db', check_same_thread=False)
@@ -124,3 +124,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
