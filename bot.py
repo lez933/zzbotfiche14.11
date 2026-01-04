@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-leZbot — Version OPTIMISÉE POUR LA VITESSE
-- Chargement unique de la base au démarrage → /num ultra-rapide même avec 10k+ fiches
-- Silence total sur les messages texte normaux
-- Support pipe-separated, Fiche X, texte libre
+leZbot — Version avec /mot et /num (les deux marchent !)
+- /num ou /mot 0600000000 → fiche instantanée
+- Chargement en mémoire → ultra-rapide même avec 10k+ fiches
+- Silence total sur messages normaux
 """
 
 import asyncio
@@ -25,7 +25,7 @@ DB_PATH = Path("db.json")
 MAX_REPLY = 3900
 PHONE_RE = re.compile(r"(?:\+?33|0)?\s*[1-9](?:[ .-]?\d){8}")
 
-# === BASE DE DONNÉES EN MÉMOIRE (chargée une seule fois) ===
+# Base en mémoire
 db: Dict[str, str] = {}
 
 def log(*args):
@@ -35,15 +35,14 @@ def load_db_once() -> Dict[str, str]:
     if DB_PATH.exists():
         try:
             data = json.loads(DB_PATH.read_text(encoding="utf-8"))
-            log(f"Base chargée : {len(data)} fiches en mémoire")
+            log(f"Base chargée : {len(data)} fiches")
             return data
         except Exception as e:
-            log("Erreur chargement DB:", e)
-    log("Nouvelle base vide créée")
+            log("Erreur DB:", e)
+    log("Base vide créée")
     return {}
 
 def save_db() -> None:
-    """Sauvegarde sécurisée sur disque"""
     tmp = DB_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(DB_PATH)
@@ -137,7 +136,7 @@ def import_text_into_db(text: str) -> Tuple[int, int]:
     else:
         fiche_pairs = index_fiches_file(text)
         if not fiche_pairs:
-            log("Format libre ou blocs séparés")
+            log("Format libre")
             fiche_pairs = []
             for block in split_fiches(text):
                 pairs = index_fiche_block(block)
@@ -158,7 +157,7 @@ def import_text_into_db(text: str) -> Tuple[int, int]:
             added += 1
     
     if added or updated:
-        save_db()  # Sauvegarde seulement si modification
+        save_db()
     
     return added, updated
 
@@ -166,17 +165,17 @@ def import_text_into_db(text: str) -> Tuple[int, int]:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "✅ leZbot prêt (version rapide !)\n"
-        "• Envoie un .txt → import fiches\n"
-        "• /num 0600000000 → fiche instantanée\n"
-        "• /stat • /export • /ping"
+        "✅ leZbot prêt !\n"
+        "/num ou /mot 0600000000 → fiche instantanée\n"
+        "Envoie .txt → import\n"
+        "/stat /export /ping"
     )
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 pong")
 
 async def cmd_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📊 {len(db)} fiches en base")
+    await update.message.reply_text(f"📊 {len(db)} fiches")
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db:
@@ -187,11 +186,12 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     path.write_text("\n".join(lines), encoding="utf-8")
     await update.message.reply_document(document=InputFile(path.open("rb"), filename="toutes_les_fiches.txt"))
 
-async def handle_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_num_or_mot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    m = re.search(r"/num\s*([+\d][\d .-]*)", text, re.IGNORECASE)
+    # Accepte /num ou /mot (insensible à la casse)
+    m = re.search(r"/(?:num|mot)\s*([+\d][\d .-]*)", text, re.IGNORECASE)
     if not m:
-        await update.message.reply_text("Utilise : /num 0600000000")
+        await update.message.reply_text("Utilise : /num ou /mot 0600000000")
         return
     num = normalize_fr_phone(m.group(1))
     if not num:
@@ -201,7 +201,7 @@ async def handle_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fiche = db.get(num)
     if fiche:
         if len(fiche) > MAX_REPLY:
-            fiche = fiche[:MAX_REPLY-50] + "\n… (fiche coupée)"
+            fiche = fiche[:MAX_REPLY-50] + "\n… (coupée)"
         await update.message.reply_text(f"📇 Fiche {num}:\n\n{fiche}")
     else:
         await update.message.reply_text(f"Aucune fiche pour {num}")
@@ -209,8 +209,8 @@ async def handle_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc: return
-    log(f"Document reçu : {doc.file_name}")
-    await update.message.reply_text("Traitement du fichier en cours…")
+    log(f"Document : {doc.file_name}")
+    await update.message.reply_text("Traitement en cours…")
     
     file = await doc.get_file()
     data = await file.download_as_bytearray()
@@ -218,24 +218,21 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     added, updated = import_text_into_db(text)
     await update.message.reply_text(
-        f"✅ Import terminé !\n"
-        f"Ajoutées : {added}\n"
-        f"Mises à jour : {updated}\n"
-        f"Total : {len(db)} fiches"
+        f"✅ Import OK !\n"
+        f"+ {added} nouvelles\n"
+        f"~ {updated} mises à jour\n"
+        f"Total : {len(db)}"
     )
-    log(f"Import → +{added} / ~{updated} → total {len(db)}")
 
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Silence total sur les messages normaux → comme tu voulais
-    return
+    return  # Silence total
 
 # === Démarrage ===
 if __name__ == "__main__":
     token = os.getenv("BOT_TOKEN")
     if not token:
-        raise SystemExit("⚠️ Variable BOT_TOKEN manquante !")
+        raise SystemExit("⚠️ BOT_TOKEN manquant !")
 
-    # Chargement unique au démarrage
     global db
     db = load_db_once()
 
@@ -246,9 +243,11 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stat", cmd_stat))
     app.add_handler(CommandHandler("export", cmd_export))
 
-    app.add_handler(MessageHandler(filters.Regex(r"^/num", re.IGNORECASE), handle_num))
+    # /num et /mot gérés par le même handler
+    app.add_handler(MessageHandler(filters.Regex(r"^/(?:num|mot)", re.IGNORECASE), handle_num_or_mot))
+
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
 
-    print("🚀 leZbot démarré → /num ultra-rapide !")
+    print("🚀 leZbot prêt → /num et /mot fonctionnent !")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
