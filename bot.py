@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-leZbot — Version avec /mot et /num (les deux marchent !)
-- /num ou /mot 0600000000 → fiche instantanée
-- Chargement en mémoire → ultra-rapide même avec 10k+ fiches
-- Silence total sur messages normaux
+leZbot — Version CORRIGÉE pour Python 3.12 / Railway
+- Plus d'erreur "annotated name 'db' can't be global"
+- /num et /mot fonctionnent instantanément
+- Base chargée en mémoire au démarrage
 """
 
 import asyncio
@@ -25,7 +25,7 @@ DB_PATH = Path("db.json")
 MAX_REPLY = 3900
 PHONE_RE = re.compile(r"(?:\+?33|0)?\s*[1-9](?:[ .-]?\d){8}")
 
-# Base en mémoire
+# Base en mémoire (chargée une seule fois)
 db: Dict[str, str] = {}
 
 def log(*args):
@@ -38,7 +38,7 @@ def load_db_once() -> Dict[str, str]:
             log(f"Base chargée : {len(data)} fiches")
             return data
         except Exception as e:
-            log("Erreur DB:", e)
+            log("Erreur chargement DB:", e)
     log("Base vide créée")
     return {}
 
@@ -124,7 +124,7 @@ def parse_pipe_separated(text: str) -> List[Tuple[str, str]]:
     return pairs
 
 def import_text_into_db(text: str) -> Tuple[int, int]:
-    global db
+    # Plus de "global db" → corrigé !
     added = updated = 0
     
     lines = text.strip().splitlines()
@@ -167,7 +167,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ leZbot prêt !\n"
         "/num ou /mot 0600000000 → fiche instantanée\n"
-        "Envoie .txt → import\n"
+        "Envoie .txt → import fiches\n"
         "/stat /export /ping"
     )
 
@@ -175,7 +175,7 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🏓 pong")
 
 async def cmd_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📊 {len(db)} fiches")
+    await update.message.reply_text(f"📊 {len(db)} fiches en base")
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db:
@@ -188,7 +188,6 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_num_or_mot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text or ""
-    # Accepte /num ou /mot (insensible à la casse)
     m = re.search(r"/(?:num|mot)\s*([+\d][\d .-]*)", text, re.IGNORECASE)
     if not m:
         await update.message.reply_text("Utilise : /num ou /mot 0600000000")
@@ -209,7 +208,7 @@ async def handle_num_or_mot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if not doc: return
-    log(f"Document : {doc.file_name}")
+    log(f"Document reçu : {doc.file_name}")
     await update.message.reply_text("Traitement en cours…")
     
     file = await doc.get_file()
@@ -218,10 +217,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     added, updated = import_text_into_db(text)
     await update.message.reply_text(
-        f"✅ Import OK !\n"
-        f"+ {added} nouvelles\n"
-        f"~ {updated} mises à jour\n"
-        f"Total : {len(db)}"
+        f"✅ Import terminé !\n"
+        f"Ajoutées : {added}\n"
+        f"Mises à jour : {updated}\n"
+        f"Total : {len(db)} fiches"
     )
 
 async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,10 +230,10 @@ async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     token = os.getenv("BOT_TOKEN")
     if not token:
-        raise SystemExit("⚠️ BOT_TOKEN manquant !")
+        raise SystemExit("⚠️ BOT_TOKEN manquant dans les variables d'environnement !")
 
-    global db
-    db = load_db_once()
+    # Chargement unique
+    db.update(load_db_once())  # On met à jour le dict global
 
     app = Application.builder().token(token).build()
 
@@ -243,11 +242,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("stat", cmd_stat))
     app.add_handler(CommandHandler("export", cmd_export))
 
-    # /num et /mot gérés par le même handler
     app.add_handler(MessageHandler(filters.Regex(r"^/(?:num|mot)", re.IGNORECASE), handle_num_or_mot))
-
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
 
-    print("🚀 leZbot prêt → /num et /mot fonctionnent !")
+    print("🚀 leZbot démarré sans erreur – prêt pour Railway !")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
