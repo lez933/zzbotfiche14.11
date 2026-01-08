@@ -1,183 +1,152 @@
-import os
 import re
-import json
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import os
+from telegram import Update, Document
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
 
-# ================= CONFIG =================
 TOKEN = "8208686892:AAEx1zzR7C4aBBJhcxYsCagMLexzyM6oRk4"
-DB_FILE = "db.json"
 
-# ================= BASE =================
-if os.path.exists(DB_FILE):
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        db = json.load(f)
-else:
-    db = {}
+DATA_FILE = "data.txt"
 
-# ================= INDEX ANTI DOUBLON =================
-index_phone = set()
-index_iban = set()
-index_email = set()
+seen_phones = set()
+seen_ibans = set()
+records = []
 
-def rebuild_index():
-    index_phone.clear()
-    index_iban.clear()
-    index_email.clear()
+# ==========================
+# OUTILS EXTRACTION
+# ==========================
 
-    for num, fiche in db.items():
-        index_phone.add(num)
+def extract_phone(line):
+    m = re.search(r"\b0[67]\d{8}\b", line)
+    return m.group(0) if m else ""
 
-        m = re.search(r"IBAN:\s*(\S+)", fiche)
-        if m:
-            index_iban.add(m.group(1))
+def extract_email(line):
+    m = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", line)
+    return m.group(0) if m else ""
 
-        m = re.search(r"Email:\s*(\S+)", fiche)
-        if m:
-            index_email.add(m.group(1).lower())
-
-rebuild_index()
-
-def save_db():
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(db, f, ensure_ascii=False, indent=2)
-
-# ================= OUTILS =================
-def normalize_phone(p):
-    return re.sub(r"\D", "", p)
-
-def extract_bic(line):
-    m = re.search(r"\b([A-Z]{6})[A-Z0-9]{2,5}\b", line)
-    return m.group(1) if m else ""
+def extract_birthdate(line):
+    dates = re.findall(r"\b\d{2}/\d{2}/\d{4}\b", line)
+    return dates[-1] if dates else ""
 
 def extract_iban(line):
     m = re.search(r"\bFR\d{25}\b", line)
     return m.group(0) if m else ""
 
-def extract_email(line):
-    m = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", line, re.I)
-    return m.group(0).lower() if m else ""
+def extract_bic(line):
+    m = re.search(r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", line)
+    return m.group(0)[:6] if m else ""
 
 def extract_name(line):
     parts = line.split("|")
-    nom = prenom = ""
-    for i in range(len(parts) - 1):
-        if parts[i].isupper() and parts[i+1].istitle():
-            nom = parts[i]
-            prenom = parts[i+1]
-            break
-    return nom, prenom
-
-def extract_birth(line):
-    dates = re.findall(r"\b\d{2}/\d{2}/\d{4}\b", line)
-    return dates[-1] if dates else ""
+    for i in range(len(parts)-2):
+        if parts[i] == "N":
+            nom = parts[i+1].strip()
+            prenom = parts[i+2].strip()
+            if nom.isalpha():
+                return nom.upper(), prenom.title()
+    return "", ""
 
 def extract_address(line):
-    parts = line.split("|")
-    for p in parts:
-        if "RUE" in p.upper() or "AV" in p.upper():
-            return p.strip()
-    return ""
+    m = re.search(r"\|\d{1,4}\s.+?\|\d{5}\b", line)
+    return m.group(0).replace("|", " ").strip() if m else ""
 
-# ================= IMPORT TXT =================
-def import_txt(text):
-    added = 0
-    duplicate = 0
+# ==========================
+# PARSE LIGNE COMPLETE
+# ==========================
 
-    for line in text.splitlines():
-        if "|" not in line:
-            continue
+def parse_line(line):
+    phone = extract_phone(line)
+    email = extract_email(line)
+    birth = extract_birthdate(line)
+    iban = extract_iban(line)
+    bic = extract_bic(line)
+    nom, prenom = extract_name(line)
+    address = extract_address(line)
 
-        phone = normalize_phone(line.split("|")[0])
-        if not phone:
-            continue
+    if not phone:
+        return None
 
-        iban = extract_iban(line)
-        email = extract_email(line)
+    return {
+        "phone": phone,
+        "email": email,
+        "birth": birth,
+        "iban": iban,
+        "bic": bic,
+        "nom": nom,
+        "prenom": prenom,
+        "address": address
+    }
 
-        # ⛔ ANTI DOUBLON
-        if (
-            phone in index_phone or
-            (iban and iban in index_iban) or
-            (email and email in index_email)
-        ):
-            duplicate += 1
-            continue
+# ==========================
+# TELEGRAM HANDLERS
+# ==========================
 
-        nom, prenom = extract_name(line)
-        naissance = extract_birth(line)
-        adresse = extract_address(line)
-        bic = extract_bic(line)
-
-        fiche = (
-            f"Fiche pour {nom} {prenom}\n"
-            f"Date de naissance: {naissance}\n"
-            f"Adresse: {adresse}\n"
-            f"Email: {email}\n"
-            f"IBAN: {iban}\n"
-            f"BIC: {bic}\n"
-        )
-
-        db[phone] = fiche
-        index_phone.add(phone)
-        if iban:
-            index_iban.add(iban)
-        if email:
-            index_email.add(email)
-
-        added += 1
-
-    if added:
-        save_db()
-
-    return added, duplicate
-
-# ================= COMMANDES =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot prêt.\nEnvoie un fichier .txt ou /stat")
-
-async def stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📊 Total fiches : {len(db)}")
-
-async def num(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        return
-
-    phone = normalize_phone(context.args[0])
-    fiche = db.get(phone)
-
-    if fiche:
-        await update.message.reply_text(fiche)
-    else:
-        await update.message.reply_text(f"Aucune fiche pour {phone}")
+    await update.message.reply_text("🤖 Bot prêt.\nEnvoie un fichier .txt ou /num 06XXXXXXXX")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    file = await doc.get_file()
-    content = await file.download_as_bytearray()
-    text = content.decode("utf-8", errors="ignore")
+    doc: Document = update.message.document
+    path = await doc.get_file()
+    tmp = "upload.txt"
+    await path.download_to_drive(tmp)
 
-    a, d = import_txt(text)
+    added = 0
+    ignored = 0
+
+    with open(tmp, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            rec = parse_line(line)
+            if not rec:
+                continue
+
+            if rec["phone"] in seen_phones or rec["iban"] in seen_ibans:
+                ignored += 1
+                continue
+
+            seen_phones.add(rec["phone"])
+            if rec["iban"]:
+                seen_ibans.add(rec["iban"])
+
+            records.append(rec)
+            added += 1
+
+    os.remove(tmp)
 
     await update.message.reply_text(
         f"✅ Import OK !\n"
-        f"+{a} ajoutées\n"
-        f"⛔ {d} doublons ignorés\n"
-        f"📊 Total {len(db)}"
+        f"➕ {added} ajoutées\n"
+        f"🚫 {ignored} doublons ignorés\n"
+        f"📊 Total {len(records)}"
     )
 
-# ================= MAIN =================
-def main():
-    app = Application.builder().token(TOKEN).build()
+async def handle_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        return
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stat", stat))
-    app.add_handler(CommandHandler("num", num))
-    app.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
+    num = context.args[0]
+    for r in records:
+        if r["phone"] == num:
+            msg = (
+                f"📄 Fiche pour {r['nom']} {r['prenom']}\n"
+                f"Date de naissance: {r['birth']}\n"
+                f"Adresse: {r['address']}\n"
+                f"Email: {r['email']}\n"
+                f"IBAN: {r['iban']}\n"
+                f"BIC: {r['bic']}"
+            )
+            await update.message.reply_text(msg)
+            return
 
-    print("Bot lancé...")
-    app.run_polling()
+    await update.message.reply_text("❌ Aucune fiche trouvée")
 
-if __name__ == "__main__":
-    main()
+# ==========================
+# MAIN
+# ==========================
 
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("num", handle_num))
+app.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
+
+print("🤖 Bot lancé")
+app.run_polling()
