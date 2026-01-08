@@ -5,7 +5,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ================= CONFIG =================
-TOKEN = "METS_ICI_TON_TOKEN_TELEGRAM"
+TOKEN = "8208686892:AAEx1zzR7C4aBBJhcxYsCagMLexzyM6oRk4"
 DB_FILE = "db.json"
 
 # ================= BASE =================
@@ -180,3 +180,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
