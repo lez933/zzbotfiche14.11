@@ -86,12 +86,12 @@ async def search_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
     p = db[phone].split("|")
 
     msg = (
-        f"📁 🕺🏼Fiche de {p[0]} {p[1]}\n"
-        f"🎂 📆Date de naissance: {p[4]}\n"
-        f"🏠 🏠Adresse: {p[5]}\n"
-        f"📧 📧Email: {p[2]}\n"
-        f"🏦 🏦IBAN: {p[6]}\n"
-        f"🏦 🏦BIC: {p[7]}"
+        f"📁🕺🏼Fiche de {p[0]} {p[1]}\n"
+        f"🎂 Date de naissance: {p[4]}\n"
+        f"🏠 Adresse: {p[5]}\n"
+        f"📧 Email: {p[2]}\n"
+        f"🏦 IBAN: {p[6]}\n"
+        f"🏦 BIC: {p[7]}"
     )
 
     await update.message.reply_text(msg)
@@ -110,3 +110,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
