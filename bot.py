@@ -1,162 +1,113 @@
+import os
 import re
-import sqlite3
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = "8208686892:AAEx1zzR7C4aBBJhcxYsCagMLexzyM6oRk4"
-DB = "fiches.db"
 
-# ================== DATABASE ==================
-conn = sqlite3.connect(DB, check_same_thread=False)
-cur = conn.cursor()
+DATA_DIR = "output"
+DB_FILE = "database.txt"
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS fiches (
-    telephone TEXT PRIMARY KEY,
-    nom TEXT,
-    prenom TEXT,
-    naissance TEXT,
-    adresse TEXT,
-    email TEXT,
-    iban TEXT,
-    bic TEXT
-)
-""")
-conn.commit()
+# ------------------ UTILS ------------------
 
-# ================== OUTILS ==================
-def normalize_phone(tel: str) -> str:
-    tel = re.sub(r"\D", "", tel)
-    if tel.startswith("33") and len(tel) == 11:
-        tel = "0" + tel[2:]
-    return tel if tel.startswith("0") and len(tel) == 10 else ""
+def normalize_phone(phone: str) -> str:
+    phone = phone.strip().replace(" ", "")
+    if phone.startswith("+33"):
+        phone = "0" + phone[3:]
+    elif phone.startswith("33"):
+        phone = "0" + phone[2:]
+    return phone
 
-def extract_date(parts):
-    for p in parts:
-        if re.match(r"\d{2}/\d{2}/\d{4}", p):
-            return p
-    return ""
+def load_database():
+    if not os.path.exists(DB_FILE):
+        return {}
+    db = {}
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split("|")
+            if len(parts) < 8:
+                continue
+            phone = normalize_phone(parts[3])
+            db[phone] = line.strip()
+    return db
 
-def extract_email(parts):
-    for p in parts:
-        if "@" in p:
-            return p
-    return ""
+def save_database(db: dict):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        for line in db.values():
+            f.write(line + "\n")
 
-def extract_iban(parts):
-    for p in parts:
-        if p.startswith("FR") and len(p) > 20:
-            return p
-    return ""
+# ------------------ COMMANDES ------------------
 
-def extract_bic(parts):
-    for p in parts:
-        if re.match(r"^[A-Z]{6,11}$", p):
-            return p[:6]
-    return ""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Bot fiche prêt.\nCommande : /num 06xxxxxxxx")
 
-# ================== PARSING ==================
-def parse_line(line: str):
-    parts = [p.strip() for p in line.split("|")]
-
-    if len(parts) < 5:
-        return None
-
-    tel = normalize_phone(parts[0])
-    if not tel:
-        return None
-
-    nom = parts[8] if len(parts) > 8 else ""
-    prenom = parts[9] if len(parts) > 9 else ""
-    email = extract_email(parts)
-    naissance = extract_date(parts)
-    iban = extract_iban(parts)
-    bic = extract_bic(parts)
-
-    adresse_parts = []
-    for p in parts:
-        if re.search(r"\d+ .*", p):
-            adresse_parts.append(p)
-    adresse = " ".join(adresse_parts[:2])
-
-    return (tel, nom, prenom, naissance, adresse, email, iban, bic)
-
-# ================== IMPORT ==================
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def import_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     file = await doc.get_file()
     content = (await file.download_as_bytearray()).decode("utf-8", errors="ignore")
 
+    db = load_database()
     added = 0
     ignored = 0
 
     for line in content.splitlines():
-        data = parse_line(line)
-        if not data:
+        parts = line.strip().split("|")
+        if len(parts) < 8:
             continue
 
-        try:
-            cur.execute(
-                "INSERT INTO fiches VALUES (?,?,?,?,?,?,?,?)",
-                data
-            )
-            added += 1
-        except sqlite3.IntegrityError:
+        phone = normalize_phone(parts[3])
+        if phone in db:
             ignored += 1
+            continue
 
-    conn.commit()
+        db[phone] = line.strip()
+        added += 1
 
-    total = cur.execute("SELECT COUNT(*) FROM fiches").fetchone()[0]
+    save_database(db)
 
     await update.message.reply_text(
         f"✅ Import OK !\n"
         f"➕ {added} ajoutées\n"
         f"🚫 {ignored} doublons ignorés\n"
-        f"📊 Total {total}"
+        f"📊 Total {len(db)}"
     )
 
-# ================== /num ==================
-async def num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def search_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
+        await update.message.reply_text("❌ Utilise : /num 06xxxxxxxx")
         return
 
-    tel = normalize_phone(context.args[0])
-    if not tel:
-        await update.message.reply_text("❌ Numéro invalide")
-        return
+    phone = normalize_phone(context.args[0])
+    db = load_database()
 
-    row = cur.execute(
-        "SELECT * FROM fiches WHERE telephone=?",
-        (tel,)
-    ).fetchone()
-
-    if not row:
+    if phone not in db:
         await update.message.reply_text("❌ Aucune fiche trouvée")
         return
 
-    t, nom, prenom, naissance, adresse, email, iban, bic = row
+    parts = db[phone].split("|")
 
     msg = (
-        f"📄 Fiche pour {nom} {prenom}\n"
-        f"Date de naissance: {naissance}\n"
-        f"Adresse: {adresse}\n"
-        f"Email: {email}\n"
-        f"IBAN: {iban}\n"
-        f"BIC: {bic}"
+        f"📁 Fiche pour {parts[0]} {parts[1]}\n"
+        f"🎂 Date de naissance: {parts[4]}\n"
+        f"🏠 Adresse: {parts[5]}\n"
+        f"📧 Email: {parts[2]}\n"
+        f"🏦 IBAN: {parts[6]}\n"
+        f"🏦 BIC: {parts[7]}"
     )
 
     await update.message.reply_text(msg)
 
-# ================== START ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot prêt")
+# ------------------ MAIN ------------------
 
-# ================== MAIN ==================
-app = ApplicationBuilder().token(TOKEN).build()
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("num", num))
-app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("num", search_num))
+    app.add_handler(CommandHandler("import", import_file))
 
-app.run_polling()
+    print("🤖 Bot lancé")
+    app.run_polling()
 
+if __name__ == "__main__":
+    main()
