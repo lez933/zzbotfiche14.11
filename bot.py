@@ -1,176 +1,182 @@
-#!/usr/bin/env python3
-"""
-leZbot — Version FINALE corrigée pour Railway (v20 python-telegram-bot)
-- /num et /mot fonctionnent (insensible à la casse)
-- Ultra-rapide (base en mémoire)
-- Silence sur messages normaux
-"""
-
-import asyncio
-import json
 import os
 import re
-import sys
-from pathlib import Path
-from typing import Dict, List, Tuple
+import json
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-if sys.platform.startswith("win"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# ================= CONFIG =================
+TOKEN = "METS_ICI_TON_TOKEN_TELEGRAM"
+DB_FILE = "db.json"
 
-from telegram import Update, InputFile
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+# ================= BASE =================
+if os.path.exists(DB_FILE):
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        db = json.load(f)
+else:
+    db = {}
 
-DB_PATH = Path("db.json")
-MAX_REPLY = 3900
+# ================= INDEX ANTI DOUBLON =================
+index_phone = set()
+index_iban = set()
+index_email = set()
 
-# Base en mémoire
-db: Dict[str, str] = {}
+def rebuild_index():
+    index_phone.clear()
+    index_iban.clear()
+    index_email.clear()
 
-def log(*args):
-    print("[leZbot]", *args, flush=True)
+    for num, fiche in db.items():
+        index_phone.add(num)
 
-def load_db_once() -> Dict[str, str]:
-    if DB_PATH.exists():
-        try:
-            data = json.loads(DB_PATH.read_text(encoding="utf-8"))
-            log(f"Base chargée : {len(data)} fiches")
-            return data
-        except Exception as e:
-            log("Erreur chargement DB:", e)
-    log("Base vide")
-    return {}
+        m = re.search(r"IBAN:\s*(\S+)", fiche)
+        if m:
+            index_iban.add(m.group(1))
 
-def save_db() -> None:
-    tmp = DB_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(DB_PATH)
+        m = re.search(r"Email:\s*(\S+)", fiche)
+        if m:
+            index_email.add(m.group(1).lower())
 
-def normalize_fr_phone(raw: str) -> str:
-    s = re.sub(r"[^0-9+]", "", raw)
-    if s.startswith("+33"): s = "0" + s[3:]
-    elif s.startswith("33"): s = "0" + s[2:]
-    if len(s) == 9 and s[0] != "0":
-        s = "0" + s
-    if len(s) == 10 and s.startswith("0"):
-        return s
+rebuild_index()
+
+def save_db():
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=2)
+
+# ================= OUTILS =================
+def normalize_phone(p):
+    return re.sub(r"\D", "", p)
+
+def extract_bic(line):
+    m = re.search(r"\b([A-Z]{6})[A-Z0-9]{2,5}\b", line)
+    return m.group(1) if m else ""
+
+def extract_iban(line):
+    m = re.search(r"\bFR\d{25}\b", line)
+    return m.group(0) if m else ""
+
+def extract_email(line):
+    m = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", line, re.I)
+    return m.group(0).lower() if m else ""
+
+def extract_name(line):
+    parts = line.split("|")
+    nom = prenom = ""
+    for i in range(len(parts) - 1):
+        if parts[i].isupper() and parts[i+1].istitle():
+            nom = parts[i]
+            prenom = parts[i+1]
+            break
+    return nom, prenom
+
+def extract_birth(line):
+    dates = re.findall(r"\b\d{2}/\d{2}/\d{4}\b", line)
+    return dates[-1] if dates else ""
+
+def extract_address(line):
+    parts = line.split("|")
+    for p in parts:
+        if "RUE" in p.upper() or "AV" in p.upper():
+            return p.strip()
     return ""
 
-def parse_pipe_separated(text: str) -> List[Tuple[str, str]]:
-    pairs = []
-    for line in text.strip().splitlines():
-        if '|' not in line: continue
-        fields = line.split('|')
-        if len(fields) < 10: continue
-        nom, prenom = fields[0].strip(), fields[1].strip()
-        date_naiss, adresse, cp, ville = fields[2].strip(), fields[3].strip(), fields[4].strip(), fields[5].strip()
-        tel, email, iban, bic = fields[6].strip(), fields[7].strip(), fields[8].strip(), fields[9].strip()
-        num = normalize_fr_phone(tel)
-        if not num: continue
-        fiche = f"Fiche pour {nom} {prenom}\n"
-        if date_naiss: fiche += f"Date de naissance: {date_naiss}\n"
-        if adresse or cp or ville: fiche += f"Adresse: {adresse} {cp} {ville}\n"
-        if email: fiche += f"Email: {email}\n"
-        if iban: fiche += f"IBAN: {iban}\n"
-        if bic: fiche += f"BIC: {bic}\n"
-        pairs.append((num, fiche.strip()))
-    return pairs
+# ================= IMPORT TXT =================
+def import_txt(text):
+    added = 0
+    duplicate = 0
 
-def import_text_into_db(text: str) -> Tuple[int, int]:
-    added = updated = 0
-    lines = text.strip().splitlines()
-    if len([l for l in lines if l.count('|') >= 9]) > len(lines) * 0.8 and len(lines) > 1:
-        log("Format pipe-separated détecté")
-        fiche_pairs = parse_pipe_separated(text)
-    else:
-        # Autres formats (Fiche X, libre) – simplifié mais efficace
-        fiche_pairs = []
-        # Tu peux réajouter les anciennes fonctions si besoin, mais pipe est ton principal
-        # Pour l'instant on se concentre sur pipe pour éviter les bugs
-        pass
-    
-    for num, fiche in fiche_pairs:
-        if num in db:
-            if fiche != db[num]:
-                db[num] = fiche
-                updated += 1
-        else:
-            db[num] = fiche
-            added += 1
-    
-    if added or updated:
+    for line in text.splitlines():
+        if "|" not in line:
+            continue
+
+        phone = normalize_phone(line.split("|")[0])
+        if not phone:
+            continue
+
+        iban = extract_iban(line)
+        email = extract_email(line)
+
+        # ⛔ ANTI DOUBLON
+        if (
+            phone in index_phone or
+            (iban and iban in index_iban) or
+            (email and email in index_email)
+        ):
+            duplicate += 1
+            continue
+
+        nom, prenom = extract_name(line)
+        naissance = extract_birth(line)
+        adresse = extract_address(line)
+        bic = extract_bic(line)
+
+        fiche = (
+            f"Fiche pour {nom} {prenom}\n"
+            f"Date de naissance: {naissance}\n"
+            f"Adresse: {adresse}\n"
+            f"Email: {email}\n"
+            f"IBAN: {iban}\n"
+            f"BIC: {bic}\n"
+        )
+
+        db[phone] = fiche
+        index_phone.add(phone)
+        if iban:
+            index_iban.add(iban)
+        if email:
+            index_email.add(email)
+
+        added += 1
+
+    if added:
         save_db()
-    
-    return added, updated
 
-# Commandes
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ leZbot prêt !\n/mot ou /num 06... → fiche\nEnvoie .txt → import")
+    return added, duplicate
 
-async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🏓 pong")
+# ================= COMMANDES =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Bot prêt.\nEnvoie un fichier .txt ou /stat")
 
-async def cmd_stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"📊 {len(db)} fiches")
+async def stat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"📊 Total fiches : {len(db)}")
 
-async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not db:
-        await update.message.reply_text("Rien à exporter.")
+async def num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
         return
-    lines = [f"===== {num} =====\n{fiche}\n" for num, fiche in sorted(db.items())]
-    path = Path("export.txt")
-    path.write_text("\n".join(lines), encoding="utf-8")
-    await update.message.reply_document(InputFile(path.open("rb"), "export_fiches.txt"))
 
-async def handle_num_mot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-    m = re.search(r"^/(?:num|mot)\s*([+\d][\d .-]*)", text, re.IGNORECASE)
-    if not m:
-        await update.message.reply_text("Utilise /num ou /mot suivi du numéro")
-        return
-    num = normalize_fr_phone(m.group(1))
-    if not num:
-        await update.message.reply_text("Numéro invalide")
-        return
-    fiche = db.get(num)
+    phone = normalize_phone(context.args[0])
+    fiche = db.get(phone)
+
     if fiche:
-        if len(fiche) > MAX_REPLY:
-            fiche = fiche[:MAX_REPLY-50] + "\n… (coupée)"
-        await update.message.reply_text(f"📇 Fiche {num}:\n\n{fiche}")
+        await update.message.reply_text(fiche)
     else:
-        await update.message.reply_text(f"Aucune fiche pour {num}")
+        await update.message.reply_text(f"Aucune fiche pour {phone}")
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    if not doc: return
-    await update.message.reply_text("Traitement du fichier…")
     file = await doc.get_file()
-    data = await file.download_as_bytearray()
-    text = data.decode("utf-8", errors="ignore")
-    added, updated = import_text_into_db(text)
-    await update.message.reply_text(f"✅ Import OK ! +{added} ~{updated} → Total {len(db)}")
+    content = await file.download_as_bytearray()
+    text = content.decode("utf-8", errors="ignore")
 
-async def handle_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return  # Silence total
+    a, d = import_txt(text)
+
+    await update.message.reply_text(
+        f"✅ Import OK !\n"
+        f"+{a} ajoutées\n"
+        f"⛔ {d} doublons ignorés\n"
+        f"📊 Total {len(db)}"
+    )
+
+# ================= MAIN =================
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stat", stat))
+    app.add_handler(CommandHandler("num", num))
+    app.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
+
+    print("Bot lancé...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    token = os.getenv("BOT_TOKEN")
-    if not token:
-        raise SystemExit("⚠️ BOT_TOKEN manquant !")
-
-    db.update(load_db_once())
-
-    app = Application.builder().token(token).build()
-
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("ping", cmd_ping))
-    app.add_handler(CommandHandler("stat", cmd_stat))
-    app.add_handler(CommandHandler("export", cmd_export))
-
-    # Handler pour /num et /mot (insensible à la casse)
-    app.add_handler(MessageHandler(filters.Regex(re.compile(r"^/(num|mot)", re.IGNORECASE)), handle_num_mot))
-
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_plain_text))
-
-    print("🚀 leZbot lancé – plus de crash !")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    main()
