@@ -3,7 +3,7 @@ import sqlite3
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "8208686892:AAEx1zzR7C4aBBJhcxYsCagMLexzyM6oRk4"
+TOKEN = "MET_TON_VRAI_TOKEN_ICI"
 DB = "fiches.db"
 
 # ================== DATABASE ==================
@@ -24,21 +24,60 @@ CREATE TABLE IF NOT EXISTS fiches (
 """)
 conn.commit()
 
+# ================== OUTILS ==================
+def normalize_phone(tel: str) -> str:
+    tel = re.sub(r"\D", "", tel)
+    if tel.startswith("33") and len(tel) == 11:
+        tel = "0" + tel[2:]
+    return tel if tel.startswith("0") and len(tel) == 10 else ""
+
+def extract_date(parts):
+    for p in parts:
+        if re.match(r"\d{2}/\d{2}/\d{4}", p):
+            return p
+    return ""
+
+def extract_email(parts):
+    for p in parts:
+        if "@" in p:
+            return p
+    return ""
+
+def extract_iban(parts):
+    for p in parts:
+        if p.startswith("FR") and len(p) > 20:
+            return p
+    return ""
+
+def extract_bic(parts):
+    for p in parts:
+        if re.match(r"^[A-Z]{6,11}$", p):
+            return p[:6]
+    return ""
+
 # ================== PARSING ==================
 def parse_line(line: str):
-    parts = line.strip().split("|")
+    parts = [p.strip() for p in line.split("|")]
 
-    if len(parts) < 8:
+    if len(parts) < 5:
         return None
 
-    tel = parts[0]
+    tel = normalize_phone(parts[0])
+    if not tel:
+        return None
+
     nom = parts[8] if len(parts) > 8 else ""
     prenom = parts[9] if len(parts) > 9 else ""
-    email = next((p for p in parts if "@" in p), "")
-    naissance = next((p for p in parts if re.match(r"\d{2}/\d{2}/\d{4}", p)), "")
-    iban = next((p for p in parts if p.startswith("FR")), "")
-    bic = next((p for p in parts if re.match(r"[A-Z]{6,11}", p)), "")[:6]
-    adresse = " ".join(parts[10:14]) if len(parts) > 14 else ""
+    email = extract_email(parts)
+    naissance = extract_date(parts)
+    iban = extract_iban(parts)
+    bic = extract_bic(parts)
+
+    adresse_parts = []
+    for p in parts:
+        if re.search(r"\d+ .*", p):
+            adresse_parts.append(p)
+    adresse = " ".join(adresse_parts[:2])
 
     return (tel, nom, prenom, naissance, adresse, email, iban, bic)
 
@@ -81,7 +120,10 @@ async def num(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return
 
-    tel = context.args[0]
+    tel = normalize_phone(context.args[0])
+    if not tel:
+        await update.message.reply_text("❌ Numéro invalide")
+        return
 
     row = cur.execute(
         "SELECT * FROM fiches WHERE telephone=?",
