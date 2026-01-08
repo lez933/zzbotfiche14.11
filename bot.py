@@ -3,7 +3,7 @@ import sqlite3
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "MET_TON_VRAI_TOKEN_ICI"
+TOKEN = "8208686892:AAEx1zzR7C4aBBJhcxYsCagMLexzyM6oRk4"
 DB = "fiches.db"
 
 # ================== DATABASE ==================
@@ -159,3 +159,4 @@ app.add_handler(CommandHandler("num", num))
 app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
 app.run_polling()
+
