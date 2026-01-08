@@ -1,152 +1,119 @@
 import re
-import os
-from telegram import Update, Document
-from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, ContextTypes, filters
+import sqlite3
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "8208686892:AAEx1zzR7C4aBBJhcxYsCagMLexzyM6oRk4"
+DB = "fiches.db"
 
-DATA_FILE = "data.txt"
+# ================== DATABASE ==================
+conn = sqlite3.connect(DB, check_same_thread=False)
+cur = conn.cursor()
 
-seen_phones = set()
-seen_ibans = set()
-records = []
+cur.execute("""
+CREATE TABLE IF NOT EXISTS fiches (
+    telephone TEXT PRIMARY KEY,
+    nom TEXT,
+    prenom TEXT,
+    naissance TEXT,
+    adresse TEXT,
+    email TEXT,
+    iban TEXT,
+    bic TEXT
+)
+""")
+conn.commit()
 
-# ==========================
-# OUTILS EXTRACTION
-# ==========================
+# ================== PARSING ==================
+def parse_line(line: str):
+    parts = line.strip().split("|")
 
-def extract_phone(line):
-    m = re.search(r"\b0[67]\d{8}\b", line)
-    return m.group(0) if m else ""
-
-def extract_email(line):
-    m = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", line)
-    return m.group(0) if m else ""
-
-def extract_birthdate(line):
-    dates = re.findall(r"\b\d{2}/\d{2}/\d{4}\b", line)
-    return dates[-1] if dates else ""
-
-def extract_iban(line):
-    m = re.search(r"\bFR\d{25}\b", line)
-    return m.group(0) if m else ""
-
-def extract_bic(line):
-    m = re.search(r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", line)
-    return m.group(0)[:6] if m else ""
-
-def extract_name(line):
-    parts = line.split("|")
-    for i in range(len(parts)-2):
-        if parts[i] == "N":
-            nom = parts[i+1].strip()
-            prenom = parts[i+2].strip()
-            if nom.isalpha():
-                return nom.upper(), prenom.title()
-    return "", ""
-
-def extract_address(line):
-    m = re.search(r"\|\d{1,4}\s.+?\|\d{5}\b", line)
-    return m.group(0).replace("|", " ").strip() if m else ""
-
-# ==========================
-# PARSE LIGNE COMPLETE
-# ==========================
-
-def parse_line(line):
-    phone = extract_phone(line)
-    email = extract_email(line)
-    birth = extract_birthdate(line)
-    iban = extract_iban(line)
-    bic = extract_bic(line)
-    nom, prenom = extract_name(line)
-    address = extract_address(line)
-
-    if not phone:
+    if len(parts) < 8:
         return None
 
-    return {
-        "phone": phone,
-        "email": email,
-        "birth": birth,
-        "iban": iban,
-        "bic": bic,
-        "nom": nom,
-        "prenom": prenom,
-        "address": address
-    }
+    tel = parts[0]
+    nom = parts[8] if len(parts) > 8 else ""
+    prenom = parts[9] if len(parts) > 9 else ""
+    email = next((p for p in parts if "@" in p), "")
+    naissance = next((p for p in parts if re.match(r"\d{2}/\d{2}/\d{4}", p)), "")
+    iban = next((p for p in parts if p.startswith("FR")), "")
+    bic = next((p for p in parts if re.match(r"[A-Z]{6,11}", p)), "")[:6]
+    adresse = " ".join(parts[10:14]) if len(parts) > 14 else ""
 
-# ==========================
-# TELEGRAM HANDLERS
-# ==========================
+    return (tel, nom, prenom, naissance, adresse, email, iban, bic)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot prêt.\nEnvoie un fichier .txt ou /num 06XXXXXXXX")
-
+# ================== IMPORT ==================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc: Document = update.message.document
-    path = await doc.get_file()
-    tmp = "upload.txt"
-    await path.download_to_drive(tmp)
+    doc = update.message.document
+    file = await doc.get_file()
+    content = (await file.download_as_bytearray()).decode("utf-8", errors="ignore")
 
     added = 0
     ignored = 0
 
-    with open(tmp, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            rec = parse_line(line)
-            if not rec:
-                continue
+    for line in content.splitlines():
+        data = parse_line(line)
+        if not data:
+            continue
 
-            if rec["phone"] in seen_phones or rec["iban"] in seen_ibans:
-                ignored += 1
-                continue
-
-            seen_phones.add(rec["phone"])
-            if rec["iban"]:
-                seen_ibans.add(rec["iban"])
-
-            records.append(rec)
+        try:
+            cur.execute(
+                "INSERT INTO fiches VALUES (?,?,?,?,?,?,?,?)",
+                data
+            )
             added += 1
+        except sqlite3.IntegrityError:
+            ignored += 1
 
-    os.remove(tmp)
+    conn.commit()
+
+    total = cur.execute("SELECT COUNT(*) FROM fiches").fetchone()[0]
 
     await update.message.reply_text(
         f"✅ Import OK !\n"
         f"➕ {added} ajoutées\n"
         f"🚫 {ignored} doublons ignorés\n"
-        f"📊 Total {len(records)}"
+        f"📊 Total {total}"
     )
 
-async def handle_num(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ================== /num ==================
+async def num(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return
 
-    num = context.args[0]
-    for r in records:
-        if r["phone"] == num:
-            msg = (
-                f"📄 Fiche pour {r['nom']} {r['prenom']}\n"
-                f"Date de naissance: {r['birth']}\n"
-                f"Adresse: {r['address']}\n"
-                f"Email: {r['email']}\n"
-                f"IBAN: {r['iban']}\n"
-                f"BIC: {r['bic']}"
-            )
-            await update.message.reply_text(msg)
-            return
+    tel = context.args[0]
 
-    await update.message.reply_text("❌ Aucune fiche trouvée")
+    row = cur.execute(
+        "SELECT * FROM fiches WHERE telephone=?",
+        (tel,)
+    ).fetchone()
 
-# ==========================
-# MAIN
-# ==========================
+    if not row:
+        await update.message.reply_text("❌ Aucune fiche trouvée")
+        return
 
+    t, nom, prenom, naissance, adresse, email, iban, bic = row
+
+    msg = (
+        f"📄 Fiche pour {nom} {prenom}\n"
+        f"Date de naissance: {naissance}\n"
+        f"Adresse: {adresse}\n"
+        f"Email: {email}\n"
+        f"IBAN: {iban}\n"
+        f"BIC: {bic}"
+    )
+
+    await update.message.reply_text(msg)
+
+# ================== START ==================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Bot prêt")
+
+# ================== MAIN ==================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("num", handle_num))
-app.add_handler(MessageHandler(filters.Document.TEXT, handle_file))
+app.add_handler(CommandHandler("num", num))
+app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
-print("🤖 Bot lancé")
 app.run_polling()
